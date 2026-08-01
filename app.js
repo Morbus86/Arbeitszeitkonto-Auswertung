@@ -73,7 +73,12 @@ async function extractLines(file){
 }
 
 /* ---------- Zeilen-Parser ---------- */
-const ROW_RE = /^(Mo|Di|Mi|Do|Fr|Sa|So)\s+(\d{2}\.\d{2}\.\d{4})\s+(.+?)\s+(\d{2}:\d{2})\s+(\d{2}:\d{2})\s+(\d+)\s*Min\.\s+(\d+,\d)\s*%\s+(\d{2}:\d{2})/;
+// \s* statt \s+ vor der ersten Uhrzeit: manche Dienstart-Texte (z.B. "zur besonderen
+// verwendung") haben in der PDF-Textextraktion kein Leerzeichen vor der Uhrzeit.
+const ROW_RE = /^(Mo|Di|Mi|Do|Fr|Sa|So)\s+(\d{2}\.\d{2}\.\d{4})\s+(.+?)\s*(\d{2}:\d{2})\s+(\d{2}:\d{2})\s+(\d+)\s*Min\.\s+(\d+,\d)\s*%\s+(\d{2}:\d{2})/;
+// Echte Schichtzeilen erkennen: Präfix + Ziffer + ">" (z.B. "Früh 8 > Winter").
+// Verhindert Fehltreffer wie "Nacht-Frei" (0 Std., kein echter Nachtdienst).
+const SHIFT_RE = /^(Früh|Spät|Tag|Nacht)\s+\d+\s*>/;
 
 function parseLines(lines, sourceName){
   const rows = [];
@@ -100,20 +105,24 @@ function parseLines(lines, sourceName){
   return rows;
 }
 
-function extractIstArbeitszeit(lines){
-  // "Summe Ist-Arbeitszeit: - 151,50" -> 151.5 (Vorzeichen der Kontostand-Differenz irrelevant, Betrag zählt)
+function extractFooterValues(lines){
+  // "Gesamtdauer in Std.:" ist die reine Summe der Gesamt-Spalte (verlässlich, entspricht
+  // exakt der eigenen Zeilensumme - dient als Selbst-Check für den Parser).
+  // "Summe Ist-Arbeitszeit:" ist BaBellas eigene Kontostand-Zahl (kann von internen
+  // Zusatzregeln abweichen, z.B. Gutschriften bei externer Fortbildung).
+  let gesamtdauer = null, istArbeitszeit = null;
   for(const line of lines){
-    const m = line.match(/Summe Ist-Arbeitszeit:\s*-?\s*([\d.]+,\d+)/);
-    if(m) return parseFloat(m[1].replace(".","").replace(",","."));
+    let m = line.match(/Gesamtdauer in Std\.:\s*-?\s*([\d.]+,\d+)/);
+    if(m) gesamtdauer = parseFloat(m[1].replace(".","").replace(",","."));
+    m = line.match(/Summe Ist-Arbeitszeit:\s*-?\s*([\d.]+,\d+)/);
+    if(m) istArbeitszeit = parseFloat(m[1].replace(".","").replace(",","."));
   }
-  return null;
+  return {gesamtdauer, istArbeitszeit};
 }
 
 function shiftTypeOf(dienstart){
-  for(const t of SHIFT_TYPES){
-    if(dienstart.startsWith(t)) return t;
-  }
-  return null;
+  const m = dienstart.match(SHIFT_RE);
+  return m ? m[1] : null;
 }
 function isIgnored(dienstart){
   return IGNORE_TYPES.some(t => dienstart.startsWith(t));
@@ -201,6 +210,45 @@ function aggregate(rows){
   };
 }
 
+/* ---------- Soll/Ist-Konto (unabhängig von der PDF-Fußzeile) ----------
+   Soll = Vertrag (Wochenstunden / Arbeitstage) für jeden Mo-Fr-Tag, der kein
+   gesetzlicher Feiertag ist, im Zeitraum jeder einzelnen hochgeladenen Datei
+   (Lücken zwischen nicht hochgeladenen Monaten werden NICHT überbrückt).
+   Ist = Summe aller Gesamt-Werte (entspricht "Gesamtdauer in Std." der PDFs -
+   das schließt Urlaub, Dienstausfall, Fortbildung etc. korrekt als Soll-erfüllend ein). */
+function computeKonto(rows, weeklyHours, workdays){
+  const byFile = {};
+  rows.forEach(r => (byFile[r.quelle] = byFile[r.quelle] || []).push(r));
+
+  const dailyIst = {};
+  rows.forEach(r => { dailyIst[r.iso] = (dailyIst[r.iso] || 0) + r.gesamtMin; });
+
+  const coveredIsos = new Set();
+  Object.values(byFile).forEach(fileRows => {
+    const isos = fileRows.map(r => r.iso).sort();
+    let cur = new Date(isos[0]);
+    const end = new Date(isos[isos.length-1]);
+    while(cur <= end){ coveredIsos.add(ymd(cur)); cur = addDays(cur,1); }
+  });
+
+  const years = [...new Set([...coveredIsos].map(iso => Number(iso.slice(0,4))))];
+  let feiertage = {};
+  years.forEach(y => Object.assign(feiertage, hessenFeiertage(y)));
+
+  const dailySollMin = Math.round(weeklyHours / workdays * 60);
+  let sollMin = 0, istMin = 0;
+  [...coveredIsos].forEach(iso => {
+    const [y,m,d] = iso.split("-").map(Number);
+    const weekday = new Date(y, m-1, d).getDay();
+    const isWorkday = weekday >= 1 && weekday <= 5;
+    const isHoliday = feiertage[iso] !== undefined;
+    if(isWorkday && !isHoliday) sollMin += dailySollMin;
+    istMin += (dailyIst[iso] || 0);
+  });
+
+  return {sollMin, istMin, saldoMin: istMin - sollMin, coveredDays: coveredIsos.size};
+}
+
 function fmtH(min){
   const sign = min < 0 ? "-" : "";
   min = Math.abs(min);
@@ -241,12 +289,13 @@ function renderFileList(){
     </div>`).join("");
 }
 
+let fileFooters = []; // {name, myGesamt, pdfGesamtdauer, pdfIstArbeitszeit}
+
 processBtn.addEventListener("click", async () => {
   processBtn.disabled = true;
   processBtn.textContent = "Verarbeite...";
   allRows = [];
-  let istArbeitszeitSumme = 0;
-  let istArbeitszeitBekannt = true;
+  fileFooters = [];
 
   for(const u of uploadedFiles){
     try{
@@ -256,9 +305,13 @@ processBtn.addEventListener("click", async () => {
         u.status = "fehler: keine Zeilen erkannt";
       } else {
         allRows.push(...rows);
-        u.status = `ok (${rows.length} Zeilen)`;
-        const ist = extractIstArbeitszeit(lines);
-        if(ist !== null) istArbeitszeitSumme += ist; else istArbeitszeitBekannt = false;
+        const myGesamt = rows.reduce((s,r) => s + r.gesamtMin, 0);
+        const footer = extractFooterValues(lines);
+        fileFooters.push({name: u.name, myGesamt, ...footer});
+        const mismatch = footer.gesamtdauer !== null && Math.abs(myGesamt/60 - footer.gesamtdauer) > 0.02;
+        u.status = mismatch
+          ? `⚠ ${rows.length} Zeilen, Summe weicht von PDF ab – prüfen`
+          : `ok (${rows.length} Zeilen)`;
       }
     }catch(err){
       u.status = "fehler: " + err.message;
@@ -275,31 +328,28 @@ processBtn.addEventListener("click", async () => {
   }
 
   const agg = aggregate(allRows);
-  renderResults(agg, istArbeitszeitBekannt ? istArbeitszeitSumme : null);
+  renderResults(agg);
 });
 
-function renderResults(agg, istSollSumme){
+function renderResults(agg){
   document.getElementById("empty").style.display = "none";
   document.getElementById("results").style.display = "block";
 
   document.getElementById("periodLabel").textContent =
     agg.minDate && agg.maxDate ? `${fmtDate(ymd(agg.minDate))} – ${fmtDate(ymd(agg.maxDate))}` : "";
 
-  // Hinweis zur PDF-eigenen Summenzeile (nur informativ, keine automatische Bewertung –
-  // "Ist-Arbeitszeit" in der PDF-Fußzeile lässt sich aus dem Text allein nicht zweifelsfrei
-  // mit "gearbeitete Stunden" gleichsetzen, könnte auch ein Zeitkonto-Saldo sein. Die hier
-  // berechnete Stundenzahl kommt direkt aus den einzelnen Gesamt-Feldern jeder Zeile.)
+  // Selbst-Check: eigene Zeilensumme je Datei vs. PDF-eigene "Gesamtdauer in Std." –
+  // beide sind reine Summen der Gesamt-Spalte und müssen exakt übereinstimmen.
+  // Weicht das ab, deutet das auf ein Parsing-Problem hin (z.B. nicht erkannte Zeile).
   const valEl = document.getElementById("validation");
-  valEl.innerHTML = "";
-  if(istSollSumme !== null){
-    const computedH = agg.totalWorkedMin/60;
-    const diff = Math.abs(computedH - istSollSumme);
-    if(diff > 0.05){
-      valEl.innerHTML = `<div class="warn-box">ℹ️ Zeilensumme berechnet: ${fmtH(agg.totalWorkedMin)} Std. &nbsp;|&nbsp; PDF-Fußzeile "Ist-Arbeitszeit": ${istSollSumme.toFixed(2).replace(".",",")} Std. Werte weichen ab – Fußzeile ist evtl. ein Zeitkonto-Saldo, keine Bruttosumme. Die Zeilensumme oben gilt als verlässliche Berechnung.</div>`;
-    } else {
-      valEl.innerHTML = `<div class="ok-box">✓ Zeilensumme stimmt mit der PDF-Fußzeile "Ist-Arbeitszeit" überein.</div>`;
-    }
+  const mismatches = fileFooters.filter(f => f.gesamtdauer !== null && Math.abs(f.myGesamt/60 - f.gesamtdauer) > 0.02);
+  if(mismatches.length){
+    valEl.innerHTML = `<div class="warn-box">⚠️ Bei ${mismatches.length} Datei(en) weicht meine Zeilensumme von der PDF-eigenen "Gesamtdauer" ab: ${mismatches.map(m=>m.name).join(", ")}. Das deutet auf nicht erkannte Zeilen hin – Rohdaten unten prüfen.</div>`;
+  } else {
+    valEl.innerHTML = `<div class="ok-box">✓ Zeilensumme stimmt in allen ${fileFooters.length} Datei(en) exakt mit der PDF-eigenen "Gesamtdauer" überein.</div>`;
   }
+
+  renderKonto();
 
   // Stat grid
   document.getElementById("statGrid").innerHTML = `
@@ -350,6 +400,39 @@ function renderResults(agg, istSollSumme){
   window.__agg = agg; // für Export
 }
 
+function renderKonto(){
+  const weeklyHours = parseFloat(document.getElementById("weeklyHours").value) || 40;
+  const workdays = parseFloat(document.getElementById("workdays").value) || 5;
+  const konto = computeKonto(allRows, weeklyHours, workdays);
+
+  document.getElementById("kontoGrid").innerHTML = `
+    <div class="stat"><div class="num">${fmtH(konto.sollMin)}</div><div class="lbl">Soll (${weeklyHours}h / ${workdays} Tage)</div></div>
+    <div class="stat"><div class="num">${fmtH(konto.istMin)}</div><div class="lbl">Ist (alle erfassten Std.)</div></div>
+    <div class="stat"><div class="num" style="color:${konto.saldoMin>=0?'var(--ok)':'var(--warn)'}">${konto.saldoMin>=0?'+':''}${fmtH(konto.saldoMin)}</div><div class="lbl">Saldo</div></div>
+    <div class="stat"><div class="num">${konto.coveredDays}</div><div class="lbl">abgedeckte Kalendertage</div></div>
+  `;
+
+  // Monatsvergleich: eigene Summe vs. PDF "Gesamtdauer" vs. PDF "Summe Ist-Arbeitszeit"
+  document.getElementById("monthlyTable").innerHTML = fileFooters
+    .slice()
+    .sort((a,b) => a.name < b.name ? -1 : 1)
+    .map(f => `<tr>
+      <td>${f.name}</td>
+      <td>${fmtH(f.myGesamt)}</td>
+      <td>${f.gesamtdauer !== null ? f.gesamtdauer.toFixed(2).replace(".",",") : "–"}</td>
+      <td>${f.istArbeitszeit !== null ? f.istArbeitszeit.toFixed(2).replace(".",",") : "–"}</td>
+    </tr>`).join("");
+
+  const sumIst = fileFooters.reduce((s,f) => s + (f.istArbeitszeit || 0), 0);
+  document.getElementById("kontoNote").innerHTML =
+    `Summe "Ist-Arbeitszeit" laut PDF-Fußzeilen über alle Dateien: <strong>${sumIst.toFixed(2).replace(".",",")} Std.</strong> ` +
+    `(kann von der oben berechneten Ist-Zeile abweichen – BaBellas Portal wendet teils eigene Zusatzregeln an, z.B. bei externer Fortbildung. ` +
+    `Der Soll/Ist-Abgleich oben rechnet unabhängig davon nach Vertrag.)`;
+}
+
+document.getElementById("weeklyHours").addEventListener("change", () => { if(window.__agg) renderKonto(); });
+document.getElementById("workdays").addEventListener("change", () => { if(window.__agg) renderKonto(); });
+
 /* ---------- Export ---------- */
 function buildExportRows(){
   return allRows.slice().sort((a,b) => a.iso < b.iso ? -1 : 1).map(r => ({
@@ -379,7 +462,13 @@ document.getElementById("exportXlsx").addEventListener("click", () => {
 
   if(window.__agg){
     const agg = window.__agg;
+    const weeklyHours = parseFloat(document.getElementById("weeklyHours").value) || 40;
+    const workdays = parseFloat(document.getElementById("workdays").value) || 5;
+    const konto = computeKonto(allRows, weeklyHours, workdays);
     const summary = [
+      {Kennzahl: `Soll (${weeklyHours}h/${workdays}Tage)`, Wert: fmtH(konto.sollMin)},
+      {Kennzahl: "Ist (alle erfassten Std.)", Wert: fmtH(konto.istMin)},
+      {Kennzahl: "Saldo", Wert: (konto.saldoMin>=0?"+":"") + fmtH(konto.saldoMin)},
       {Kennzahl: "Std. gearbeitet", Wert: fmtH(agg.totalWorkedMin)},
       {Kennzahl: "Arbeitstage", Wert: agg.totalWorkDays},
       {Kennzahl: "Wochenendtage gesamt", Wert: agg.weekendDaysTotal.length},
