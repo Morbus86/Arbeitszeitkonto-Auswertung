@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BaBella Stunden-Auswertung</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0F1720">
+<style>
+  :root{
+    --bg: #0F1720;
+    --panel: #16212C;
+    --panel-2: #1C2A37;
+    --line: #26374480;
+    --text: #E7EDF2;
+    --text-dim: #93A4B3;
+    --accent: #4FB6A6;      /* Tag / Teal */
+    --fruh: #E8A93B;        /* Sonnenaufgang */
+    --tag: #4FA3D1;         /* Himmel */
+    --spat: #D97B3F;        /* Sonnenuntergang */
+    --nacht: #6C6FD0;       /* Nacht */
+    --warn: #D9633F;
+    --ok: #4FB688;
+    --radius: 10px;
+    font-variant-numeric: tabular-nums;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing:antialiased;
+    padding-bottom:64px;
+  }
+  header{
+    padding:28px 20px 18px;
+    border-bottom:1px solid var(--line);
+    background: linear-gradient(180deg, #121C26 0%, #0F1720 100%);
+  }
+  header h1{
+    margin:0 0 4px; font-size:1.4rem; letter-spacing:-0.01em; font-weight:700;
+  }
+  header p{margin:0; color:var(--text-dim); font-size:0.88rem;}
+  .daynight{
+    display:inline-flex; gap:3px; margin-right:10px; vertical-align:middle;
+  }
+  .daynight span{width:7px; height:16px; border-radius:2px; display:inline-block;}
+  main{max-width:960px; margin:0 auto; padding:20px 16px;}
+
+  .card{
+    background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
+    padding:18px; margin-bottom:16px;
+  }
+  .card h2{margin:0 0 12px; font-size:0.95rem; font-weight:700; color:var(--text);}
+  .card h2 .sub{font-weight:400; color:var(--text-dim); font-size:0.8rem;}
+
+  #dropzone{
+    border:1.5px dashed #33475680; border-radius:var(--radius); padding:28px 16px;
+    text-align:center; cursor:pointer; transition:border-color .15s, background .15s;
+  }
+  #dropzone.drag{border-color:var(--accent); background:#4FB6A611;}
+  #dropzone p{margin:4px 0; color:var(--text-dim); font-size:0.85rem;}
+  #dropzone strong{color:var(--text); font-weight:600;}
+  #fileInput{display:none;}
+
+  #fileList{margin-top:12px; display:flex; flex-direction:column; gap:6px;}
+  .filerow{
+    display:flex; align-items:center; justify-content:space-between;
+    background:var(--panel-2); border-radius:8px; padding:8px 12px; font-size:0.83rem;
+  }
+  .filerow .status{color:var(--text-dim); font-size:0.78rem;}
+  .filerow .status.ok{color:var(--ok);}
+  .filerow .status.err{color:var(--warn);}
+
+  button.primary{
+    background:var(--accent); color:#08201C; border:none; border-radius:8px;
+    padding:11px 20px; font-weight:700; font-size:0.9rem; cursor:pointer;
+    margin-top:14px; width:100%;
+  }
+  button.primary:disabled{opacity:0.4; cursor:not-allowed;}
+  button.ghost{
+    background:transparent; border:1px solid var(--line); color:var(--text);
+    border-radius:8px; padding:9px 14px; font-size:0.83rem; cursor:pointer;
+  }
+  button.ghost:hover{border-color:var(--accent);}
+
+  .stat-grid{display:grid; grid-template-columns:repeat(2,1fr); gap:12px;}
+  @media(min-width:640px){.stat-grid{grid-template-columns:repeat(4,1fr);}}
+  .stat{
+    background:var(--panel-2); border-radius:8px; padding:14px;
+  }
+  .stat .num{font-size:1.5rem; font-weight:800; letter-spacing:-0.02em;}
+  .stat .lbl{font-size:0.74rem; color:var(--text-dim); margin-top:2px;}
+
+  table{width:100%; border-collapse:collapse; font-size:0.83rem;}
+  th{text-align:left; color:var(--text-dim); font-weight:600; padding:6px 8px; border-bottom:1px solid var(--line); font-size:0.75rem; text-transform:uppercase; letter-spacing:.02em;}
+  td{padding:7px 8px; border-bottom:1px solid var(--line)0a;}
+  tr:hover td{background:#ffffff05;}
+  .dot{width:9px; height:9px; border-radius:50%; display:inline-block; margin-right:7px;}
+  .dot.Früh{background:var(--fruh);}
+  .dot.Tag{background:var(--tag);}
+  .dot.Spät{background:var(--spat);}
+  .dot.Nacht{background:var(--nacht);}
+  .dot.other{background:#556;}
+  .badge{font-size:0.72rem; padding:2px 7px; border-radius:99px; background:#ffffff10; color:var(--text-dim);}
+  .badge.we{background:#4FA3D122; color:var(--tag);}
+
+  .warn-box{
+    background:#D9633F18; border:1px solid #D9633F44; border-radius:8px;
+    padding:10px 14px; font-size:0.82rem; color:#F2B4A0; margin-bottom:14px;
+  }
+  .ok-box{
+    background:#4FB68818; border:1px solid #4FB68844; border-radius:8px;
+    padding:10px 14px; font-size:0.82rem; color:#A8E6C8; margin-bottom:14px;
+  }
+  .btnrow{display:flex; gap:10px; margin-top:10px; flex-wrap:wrap;}
+  details summary{cursor:pointer; font-size:0.85rem; color:var(--text-dim); padding:4px 0;}
+  #empty{color:var(--text-dim); font-size:0.85rem; text-align:center; padding:30px 10px;}
+  .foot-note{color:var(--text-dim); font-size:0.75rem; margin-top:6px;}
+</style>
+</head>
+<body>
+
+<header>
+  <h1><span class="daynight"><span style="background:var(--fruh)"></span><span style="background:var(--tag)"></span><span style="background:var(--spat)"></span><span style="background:var(--nacht)"></span></span>BaBella Stunden-Auswertung</h1>
+  <p>Stundennachweise hochladen &rarr; Schichten, Wochenenden &amp; Feiertage automatisch auswerten. Alles läuft lokal im Browser, es wird nichts gespeichert oder hochgeladen.</p>
+</header>
+
+<main>
+
+  <div class="card">
+    <h2>1. Stundennachweise hochladen <span class="sub">PDF, mehrere Monate gleichzeitig möglich</span></h2>
+    <div id="dropzone">
+      <p><strong>PDFs hier ablegen</strong> oder tippen zum Auswählen</p>
+      <p>z. B. alle Monats-PDFs von Januar bis Juni</p>
+      <input type="file" id="fileInput" accept="application/pdf" multiple>
+    </div>
+    <div id="fileList"></div>
+    <button class="primary" id="processBtn" disabled>Auswertung starten</button>
+  </div>
+
+  <div id="results" style="display:none;">
+
+    <div id="validation"></div>
+
+    <div class="card">
+      <h2>Überblick <span class="sub" id="periodLabel"></span></h2>
+      <div class="stat-grid" id="statGrid"></div>
+    </div>
+
+    <div class="card">
+      <h2>Schichtverteilung</h2>
+      <table>
+        <thead><tr><th>Schicht</th><th>Anzahl</th><th>Std. gesamt</th><th>davon Wochenende</th></tr></thead>
+        <tbody id="shiftTable"></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>Wochenenden <span class="sub" id="weekendSub"></span></h2>
+      <table>
+        <thead><tr><th>Datum</th><th>Tag</th><th>Schicht</th><th>Std.</th></tr></thead>
+        <tbody id="weekendTable"></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>Feiertage (Hessen) <span class="sub" id="holidaySub"></span></h2>
+      <table>
+        <thead><tr><th>Datum</th><th>Feiertag</th><th>Status</th><th>Std.</th></tr></thead>
+        <tbody id="holidayTable"></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>Export</h2>
+      <div class="btnrow">
+        <button class="ghost" id="exportCsv">CSV exportieren</button>
+        <button class="ghost" id="exportXlsx">Excel (.xlsx) exportieren</button>
+      </div>
+      <p class="foot-note">Export enthält alle geparsten Rohzeilen + Zusammenfassung.</p>
+    </div>
+
+    <div class="card">
+      <details>
+        <summary>Rohdaten anzeigen (alle geparsten Zeilen)</summary>
+        <table style="margin-top:10px;">
+          <thead><tr><th>Datum</th><th>Tag</th><th>Dienstart</th><th>Von</th><th>Bis</th><th>Std.</th><th>Quelle</th></tr></thead>
+          <tbody id="rawTable"></tbody>
+        </table>
+      </details>
+    </div>
+
+  </div>
+
+  <div id="empty">Noch keine Auswertung. Lade oben deine Stundennachweis-PDFs hoch.</div>
+
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

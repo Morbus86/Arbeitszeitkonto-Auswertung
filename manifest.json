@@ -1,0 +1,10 @@
+{
+  "name": "BaBella Stunden-Auswertung",
+  "short_name": "Stunden-Auswertung",
+  "description": "Auswertung von BaBella Stundennachweisen: Schichten, Wochenenden, Feiertage",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#0F1720",
+  "theme_color": "#0F1720",
+  "icons": []
+}
