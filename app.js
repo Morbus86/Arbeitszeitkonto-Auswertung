@@ -10,7 +10,9 @@ const IGNORE_TYPES = ["Frei","Einarbeitung","Urlaub","Wunschfrei","WX"];
 let uploadedFiles = []; // {name, status, text}
 let allRows = [];       // geparste Zeilen über alle Dateien
 
-/* ---------- Feiertage Hessen (Gauss'sche Osterformel) ---------- */
+/* ---------- Feiertage Baden-Württemberg (Gauss'sche Osterformel) ----------
+   BaBella rechnet nach BW (Firmensitz Mannheim), nicht nach dem Wohnort (Hessen).
+   BW = bundesweite Feiertage + Fronleichnam + Heilige Drei Könige + Allerheiligen. */
 function easterSunday(year){
   const a = year % 19, b = Math.floor(year/100), c = year % 100;
   const d = Math.floor(b/4), e = b % 4, f = Math.floor((b+8)/25);
@@ -25,10 +27,11 @@ function easterSunday(year){
 function addDays(date, n){ const d = new Date(date); d.setDate(d.getDate()+n); return d; }
 function ymd(d){ return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
 
-function hessenFeiertage(year){
+function bwFeiertage(year){
   const ostern = easterSunday(year);
   const list = [
     [new Date(year,0,1), "Neujahr"],
+    [new Date(year,0,6), "Heilige Drei Könige"],
     [addDays(ostern,-2), "Karfreitag"],
     [addDays(ostern,1), "Ostermontag"],
     [new Date(year,4,1), "Tag der Arbeit"],
@@ -36,6 +39,7 @@ function hessenFeiertage(year){
     [addDays(ostern,50), "Pfingstmontag"],
     [addDays(ostern,60), "Fronleichnam"],
     [new Date(year,9,3), "Tag der Deutschen Einheit"],
+    [new Date(year,10,1), "Allerheiligen"],
     [new Date(year,11,25), "1. Weihnachtsfeiertag"],
     [new Date(year,11,26), "2. Weihnachtsfeiertag"],
   ];
@@ -166,7 +170,7 @@ function aggregate(rows){
   // Feiertage über alle betroffenen Jahre
   const years = [...new Set(days.map(d => d.dateObj.getFullYear()))];
   let feiertage = {};
-  years.forEach(y => Object.assign(feiertage, hessenFeiertage(y)));
+  years.forEach(y => Object.assign(feiertage, bwFeiertage(y)));
 
   // Nur Feiertage, die auch im hochgeladenen Zeitraum liegen (zwischen minDate/maxDate der Dateien)
   const uploadedIsos = new Set(days.map(d => d.iso));
@@ -233,7 +237,7 @@ function computeKonto(rows, weeklyHours, workdays){
 
   const years = [...new Set([...coveredIsos].map(iso => Number(iso.slice(0,4))))];
   let feiertage = {};
-  years.forEach(y => Object.assign(feiertage, hessenFeiertage(y)));
+  years.forEach(y => Object.assign(feiertage, bwFeiertage(y)));
 
   const dailySollMin = Math.round(weeklyHours / workdays * 60);
   let sollMin = 0, istMin = 0;

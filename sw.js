@@ -1,4 +1,4 @@
-const CACHE = "babella-stunden-v1";
+const CACHE = "babella-stunden-v2";
 const ASSETS = ["./index.html", "./app.js", "./manifest.json"];
 
 self.addEventListener("install", e => {

@@ -23,7 +23,7 @@ function loadApp() {
   const file = path.join(__dirname, '..', 'app.js');
   const src = fs.readFileSync(file, 'utf8') +
     '\n;globalThis.__app = { parseLines, extractFooterValues, shiftTypeOf, isIgnored,' +
-    ' aggregate, computeKonto, ROW_RE, SHIFT_RE };';
+    ' aggregate, computeKonto, bwFeiertage, ROW_RE, SHIFT_RE };';
   const sandbox = {
     pdfjsLib: blackhole(), XLSX: blackhole(),
     document: blackhole(), window: blackhole(), navigator: {},
